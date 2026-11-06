@@ -1,0 +1,32 @@
+{
+  "name": "godly-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Godly (now Recent Design): search design references, browse feeds, pull palettes and watch motion frame by frame",
+  "main": "src/server.js",
+  "type": "module",
+  "bin": {
+    "godly-mcp": "src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node test/smoke.js"
+  },
+  "keywords": ["mcp", "model-context-protocol", "godly", "recent-design", "design", "inspiration", "motion", "claude"],
+  "author": "Davi Garutti <davigarutti5@gmail.com> (https://github.com/G4rutti)",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/G4rutti/godly-mcp.git"
+  },
+  "homepage": "https://github.com/G4rutti/godly-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/G4rutti/godly-mcp/issues"
+  }
+}
