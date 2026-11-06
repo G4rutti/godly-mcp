@@ -37,7 +37,18 @@ await call("godly_get", { target: "https://godly.website/website/" + b.items[0].
 );
 await call("godly_taxonomy", {}, (d) => (!Object.keys(d.tags).length ? "sem tags" : null));
 const vid = (b?.items || []).find((i) => i.video)?.page || id;
-await call("godly_media", { target: vid, frames: 3, max_media: 1 }, (d, imgs) => (imgs < 4 ? `esperava 4 imagens, veio ${imgs}` : null));
+// com frames, vídeo vem só como frames (o still duplicava o 1º frame)
+await call("godly_media", { target: vid, frames: 3, max_media: 1 }, (d, imgs) => (imgs !== 3 ? `esperava 3 frames, veio ${imgs}` : null));
+// regressões dos bugs achados montando a landing do Porteiro
+await call("godly_search", { query: "countdown timer", limit: 5 }, (d) =>
+  !d.results.some((r) => /countdown/i.test(r.title)) ? "busca de 2 termos voltou a ser estrita demais" : null
+);
+await call("godly_search", { query: "", feed: "websites", tag: "scroll-animation", limit: 3 }, (d) =>
+  !d.results.length ? "alias scrolling-animation → scroll-animation quebrou" : null
+);
+await call("godly_search", { query: "portfolio", feed: "websites", limit: 5 }, (d) =>
+  d.results.some((r) => r.tags.some((t) => ["react", "vercel", "cloudflare", "google-tag-manager"].includes(t))) ? "tag de stack vazou na lista" : null
+);
 
 await client.close();
 console.log(failed ? `\n${failed} falha(s)` : "\ntudo ok");

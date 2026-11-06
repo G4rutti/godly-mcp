@@ -1,6 +1,6 @@
 {
   "name": "godly-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for Godly (now Recent Design): search design references, browse feeds, pull palettes and watch motion frame by frame",
   "main": "src/server.js",
   "type": "module",

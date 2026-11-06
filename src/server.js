@@ -12,11 +12,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { API, FEEDS, SITE, getBinary, rpc } from "./api.js";
 import { getIndex, indexInfo, searchIndex } from "./indexer.js";
-import { full, mediaList, pageUrl, parseTarget, slim } from "./parse.js";
+import { canonTag, full, mediaList, pageUrl, parseTarget, slim } from "./parse.js";
 
 const run = promisify(execFile);
 const MEDIA_DIR = process.env.GODLY_MEDIA_DIR || join(homedir(), "godly-media");
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const ATTRIBUTION =
   "Ao usar: credite o criador (campo credit) com link pro post/site original e cite a página no Recent Design (antigo Godly). " +
@@ -65,12 +65,13 @@ server.registerTool(
   async ({ query, feed, category, tag, video_only, limit }) => {
     try {
       const idx = await getIndex();
-      let { mode, hits } = searchIndex(idx.items, query || "", { feed, category, tag });
+      let { terms, exact, hits } = searchIndex(idx.items, query || "", { feed, category, tag });
       if (video_only) hits = hits.filter((i) => (i.media || []).some((m) => m.mediaType === "video" || m.mediaType === "gif"));
       return ok({
         query,
-        match: mode === "any-term" ? "nenhum item tinha todos os termos; mostrando os que têm algum" : undefined,
         total: hits.length,
+        with_all_terms: terms.length > 1 ? exact : undefined,
+        note: terms.length > 1 && exact < hits.length ? `Os ${Math.min(exact, limit)} primeiros têm todos os termos; depois vêm os que batem só parte.` : undefined,
         results: hits.slice(0, limit).map(slim),
         next: "godly_get num id pra paleta, créditos e mídia; godly_media pra ver.",
         attribution: ATTRIBUTION,
@@ -156,7 +157,7 @@ server.registerTool(
         if (feed && it.feed !== feed) continue;
         for (const t of it.tags || []) {
           tags[t.context] ||= {};
-          tags[t.context][t.slug] = (tags[t.context][t.slug] || 0) + 1;
+          { const s = canonTag(t.slug); tags[t.context][s] = (tags[t.context][s] || 0) + 1; }
         }
       }
       const tagList = Object.fromEntries(
@@ -241,7 +242,8 @@ server.registerTool(
       if (frames > 0 && !canCut) note = "ffmpeg não encontrado: instale pra extrair frames (winget install ffmpeg / brew install ffmpeg). Mostrando só os stills.";
 
       for (const [n, m] of media.entries()) {
-        if (m.still) {
+        // com frames, o still do vídeo é praticamente o 1º frame: pula pra não gastar imagem
+        if (m.still && !(canCut && m.type !== "image")) {
           const { buf, type } = await getBinary(m.still);
           images.push({ type: "image", data: buf.toString("base64"), mimeType: mimeOf(m.still, type) });
           if (save) {
@@ -270,7 +272,7 @@ server.registerTool(
           page: pageUrl(item),
           credit: full(item).credit,
           shown: images.length,
-          order: "para cada mídia: o still primeiro, depois os frames em ordem de tempo",
+          order: canCut ? "imagens: stills das mídias estáticas; vídeos vêm só como frames, em ordem de tempo" : "um still por mídia",
           media: media.map((m) => ({ type: m.type, url: m.url, size: `${m.width}x${m.height}` })),
           saved_to: save ? workDir : undefined,
           files: save ? saved : undefined,

@@ -5,7 +5,7 @@
 export const SITE = "https://recent.design";
 export const API = process.env.GODLY_API || "https://api.recent.design/rpc";
 
-const UA = process.env.GODLY_UA || "godly-mcp/0.1 (+https://github.com/G4rutti/godly-mcp)";
+const UA = process.env.GODLY_UA || "godly-mcp/0.2 (+https://github.com/G4rutti/godly-mcp)";
 const TTL = 10 * 60 * 1000;
 const MIN_GAP = 250; // ms entre requisições
 const cache = new Map();

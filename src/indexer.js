@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { FEEDS, rpc } from "./api.js";
-import { score } from "./parse.js";
+import { hasTag, score } from "./parse.js";
 
 const FILE = process.env.GODLY_INDEX || join(homedir(), ".godly-mcp", "index.json");
 const TTL_H = Number(process.env.GODLY_INDEX_TTL_H || 12);
@@ -79,25 +79,22 @@ export function indexInfo() {
   return mem ? { file: FILE, items: mem.items.length, built: new Date(mem.builtAt).toISOString(), per_feed: mem.perFeed } : { file: FILE, items: 0 };
 }
 
-/** Busca local. Todos os termos precisam bater; se nada bater, cai pra "qualquer termo". */
+/** Busca local. Ordena por quantos termos batem (todos primeiro), depois pelo peso (título > tag > descrição).
+ *  Devolve também quantos itens tinham todos os termos, pra quem chama saber se o resto é aproximação. */
 export function searchIndex(items, query, { feed, format, category, tag } = {}) {
-  const terms = query.toLowerCase().split(/[\s,]+/).filter((t) => t.length > 1);
+  const terms = [...new Set(query.toLowerCase().split(/[\s,]+/).filter((t) => t.length > 1))];
   let pool = items;
   if (feed) pool = pool.filter((i) => i.feed === feed);
   if (format) pool = pool.filter((i) => i.format === format);
   if (category) pool = pool.filter((i) => i.category?.slug === category);
-  if (tag) pool = pool.filter((i) => (i.tags || []).some((t) => t.slug === tag));
-  if (!terms.length) return { mode: "all", hits: pool };
+  if (tag) pool = pool.filter((i) => hasTag(i, tag));
+  if (!terms.length) return { terms, exact: pool.length, hits: pool };
 
-  const rank = (fn) =>
-    pool
-      .map((i) => ({ i, s: fn(i) }))
-      .filter((x) => x.s > 0)
-      .sort((a, b) => b.s - a.s || (b.i.publishedAt || 0) - (a.i.publishedAt || 0))
-      .map((x) => x.i);
-
-  let hits = rank((i) => score(i, terms));
-  if (hits.length) return { mode: "all-terms", hits };
-  hits = rank((i) => terms.reduce((s, t) => s + score(i, [t]), 0));
-  return { mode: "any-term", hits };
+  const ranked = pool
+    .map((i) => ({ i, s: score(i, terms) }))
+    .filter((x) => x.s.matched > 0)
+    // com 3+ termos, quem bate só 1 é ruído
+    .filter((x) => terms.length < 3 || x.s.matched >= 2)
+    .sort((a, b) => b.s.matched - a.s.matched || b.s.weight - a.s.weight || (b.i.publishedAt || 0) - (a.i.publishedAt || 0));
+  return { terms, exact: ranked.filter((x) => x.s.matched === terms.length).length, hits: ranked.map((x) => x.i) };
 }
