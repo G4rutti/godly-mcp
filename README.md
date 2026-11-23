@@ -25,7 +25,7 @@ This MCP server turns all of that into tools Claude (or any MCP client) calls on
 | `godly_browse` | Live listing of a feed, sorted by recent, popular or staff picks, with category/tag filters and pagination. |
 | `godly_get` | Full details of one item: description, creator and original post/site, tags grouped by kind (color, style, interaction, framework...), **palette as hex with screen share**, media list, and pricing/links/install command for tools and skills. |
 | `godly_taxonomy` | Every category (with post counts) and every tag grouped by kind, to use as filters. |
-| `godly_media` | Shows the reference to the model: the still of each media, and with `frames > 0` it downloads the video and returns N frames spread over it (needs `ffmpeg`). Nothing is kept on disk unless `save: true`. |
+| `godly_media` | Shows the reference to the model. Images come as they are. **Videos are watched in full**: the whole video is downloaded and every frame is analysed. You get one image per distinct scene (up to `max_scenes`, default 16, spread from start to end), contact sheets covering the video from the first second to the last with no gaps, and every palette colour measured across all frames (`watched[].palette[].on_screen` and `where`: whole video vs. one stretch). A `verdict` names the colours that belong to a single section and not to the reference's identity. `poster_only: true` returns just the poster, with a warning. Needs `ffmpeg`. Nothing is kept on disk unless `save: true`. |
 | `godly_status` | Checks the API, the local index and `ffmpeg`. `refresh: true` rebuilds the index. |
 
 Inputs accept a `recent.design/i/<id>-<slug>` URL, an old `godly.website` link, the 7-character id or the slug.
@@ -36,7 +36,11 @@ Inputs accept a `recent.design/i/<id>-<slug>` URL, an old `godly.website` link, 
 
 ## Install
 
-Requires Node 18+. `ffmpeg` is optional (only for `frames`).
+Requires Node 18+. `ffmpeg` (with `ffprobe`) is needed to watch videos; without it `godly_media` falls back to the poster and says so.
+
+### Why videos are watched whole
+
+A video item's poster is just its first frame, and its palette is averaged over the whole recording. A colour at 6% can come from a three-second stretch. Stripe Press is the case that prompted this: its `#19167E` indigo is the page of one book near the end of the recording, not the site's identity, which is the near-black `#1A1816`. `godly_get` now adds a `video_warning` on video items, and `godly_media` goes through every frame and tells you which colours are local to one stretch.
 
 ```bash
 git clone https://github.com/G4rutti/godly-mcp.git

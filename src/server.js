@@ -2,21 +2,19 @@
 // godly-mcp — servidor MCP (stdio) para o Godly, que hoje vive em recent.design.
 // Usa a mesma API pública e de leitura que o site usa (api.recent.design/rpc). Nada de login, salvos ou conta.
 
-import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { API, FEEDS, SITE, getBinary, rpc } from "./api.js";
 import { getIndex, indexInfo, searchIndex } from "./indexer.js";
-import { canonTag, full, mediaList, pageUrl, parseTarget, slim } from "./parse.js";
+import { canonTag, full, mediaList, pageUrl, palette, parseTarget, slim } from "./parse.js";
+import { VIDEO_WARNING, hasFfmpeg, verdictOf, watchAll } from "./video.js";
 
-const run = promisify(execFile);
 const MEDIA_DIR = process.env.GODLY_MEDIA_DIR || join(homedir(), "godly-media");
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 const ATTRIBUTION =
   "Ao usar: credite o criador (campo credit) com link pro post/site original e cite a página no Recent Design (antigo Godly). " +
@@ -131,7 +129,13 @@ server.registerTool(
   },
   async ({ target }) => {
     try {
-      return ok({ item: full(await resolveItem(target)), attribution: ATTRIBUTION });
+      const item = full(await resolveItem(target));
+      const video = item.media.some((m) => m.type !== "image");
+      return ok({
+        item,
+        video_warning: video ? VIDEO_WARNING + " Aqui: godly_media com este id." : undefined,
+        attribution: ATTRIBUTION,
+      });
     } catch (e) {
       return fail(`Falhou: ${e.message}`);
     }
@@ -177,36 +181,6 @@ server.registerTool(
 );
 
 // ───────────────────────────── media
-async function hasFfmpeg() {
-  try {
-    await run("ffmpeg", ["-version"]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function duration(file) {
-  try {
-    const { stdout } = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file]);
-    return parseFloat(stdout) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function extractFrames(video, dir, prefix, n) {
-  const d = await duration(video);
-  const out = [];
-  for (let k = 0; k < n; k++) {
-    const t = d > 0 ? (d * (k + 0.5)) / n : k; // espalhado pelo vídeo
-    const file = join(dir, `${prefix}-f${k + 1}.jpg`);
-    await run("ffmpeg", ["-y", "-loglevel", "error", "-ss", t.toFixed(2), "-i", video, "-frames:v", "1", "-vf", "scale=720:-2", "-q:v", "4", file]);
-    out.push(file);
-  }
-  return out;
-}
-
 const mimeOf = (url, type) => (type && type.startsWith("image/") ? type.split(";")[0] : url.endsWith(".png") ? "image/png" : url.endsWith(".jpg") || url.endsWith(".jpeg") ? "image/jpeg" : "image/webp");
 
 server.registerTool(
@@ -214,36 +188,48 @@ server.registerTool(
   {
     title: "Ver a referência",
     description:
-      "Mostra a referência pro modelo: baixa o still (poster do vídeo ou a imagem) de cada mídia do item e devolve como imagem. " +
-      "Pra motion, peça frames > 0: baixa o vídeo e tira N frames espalhados (precisa de ffmpeg). " +
+      "Mostra a referência pro modelo. Imagem: devolve a imagem. VÍDEO: assiste o vídeo INTEIRO — baixa completo, passa por todos os frames, " +
+      "devolve uma imagem por cena/estado diferente + contact sheets cobrindo do 1º ao último segundo, e mede em todos os frames onde cada cor da paleta " +
+      "aparece (no vídeo todo ou só num trecho), pra não confundir a cor de uma seção com a identidade da referência. " +
+      "poster_only=true mostra só o poster (1º frame: NÃO use pra tirar conclusão de cor/layout). Precisa de ffmpeg. " +
       "Por padrão nada fica no disco; save=true guarda em ~/godly-media/<id>.",
     inputSchema: {
       target: z.string().min(1).describe("URL, id ou slug do item"),
-      frames: z.number().int().min(0).max(8).default(0).describe("Frames de cada vídeo (0 = só o still)"),
+      max_scenes: z.number().int().min(1).max(24).default(16).describe("Máximo de cenas mostradas por vídeo (as contact sheets cobrem o resto)"),
+      poster_only: z.boolean().default(false).describe("Só o poster do vídeo, sem assistir (não use pra decidir cor/layout)"),
       max_media: z.number().int().min(1).max(6).default(3).describe("Quantas mídias do item olhar"),
       save: z.boolean().default(false).describe("Guardar stills, vídeos e frames no disco"),
       dir: z.string().optional().describe("Pasta pra salvar (padrão ~/godly-media)"),
     },
   },
-  async ({ target, frames, max_media, save, dir }) => {
+  async ({ target, max_scenes, poster_only, max_media, save, dir }) => {
     let workDir;
     try {
       const item = await resolveItem(target);
       const media = mediaList(item).slice(0, max_media);
       if (!media.length) return fail("Esse item não tem mídia.");
+      const hasVideo = media.some((m) => m.type !== "image");
 
       workDir = save ? resolve(dir || MEDIA_DIR, `${item.id}-${item.slug}`) : await mkdtemp(join(tmpdir(), "godly-"));
       await mkdir(workDir, { recursive: true });
 
       const images = [];
       const saved = [];
-      let note;
-      const canCut = frames > 0 && (await hasFfmpeg());
-      if (frames > 0 && !canCut) note = "ffmpeg não encontrado: instale pra extrair frames (winget install ffmpeg / brew install ffmpeg). Mostrando só os stills.";
+      const watched = [];
+      const warnings = [];
+      const wantFrames = !poster_only;
+      const canCut = hasVideo && wantFrames && (await hasFfmpeg());
+      if (hasVideo && wantFrames && !canCut)
+        warnings.push(
+          "ffmpeg/ffprobe não encontrado: NÃO deu pra assistir o vídeo, só o poster (1º frame). Não tire cor nem layout disso. " +
+            "Instale (winget install ffmpeg / brew install ffmpeg) e chame de novo."
+        );
+      if (hasVideo && poster_only) warnings.push("poster_only: você viu só o poster (1º frame) do vídeo. A paleta do item cobre o vídeo inteiro; não use ela sem assistir.");
 
       for (const [n, m] of media.entries()) {
+        const isVideo = m.type !== "image";
         // com frames, o still do vídeo é praticamente o 1º frame: pula pra não gastar imagem
-        if (m.still && !(canCut && m.type !== "image")) {
+        if (m.still && !(canCut && isVideo)) {
           const { buf, type } = await getBinary(m.still);
           images.push({ type: "image", data: buf.toString("base64"), mimeType: mimeOf(m.still, type) });
           if (save) {
@@ -252,31 +238,50 @@ server.registerTool(
             saved.push(f);
           }
         }
-        if (m.type !== "image" && (canCut || save)) {
-          const { buf } = await getBinary(m.url);
+        if (isVideo && (canCut || save)) {
+          // vídeo inteiro: espera o download completo (gravações de site passam fácil de 50 MB)
+          const { buf } = await getBinary(m.url, { timeout: 300000, maxBytes: 400 * 1024 * 1024 });
           const vf = join(workDir, `m${n + 1}.mp4`);
           await writeFile(vf, buf);
           if (save) saved.push(vf);
           if (canCut) {
-            for (const f of await extractFrames(vf, workDir, `m${n + 1}`, frames)) {
-              images.push({ type: "image", data: (await readFile(f)).toString("base64"), mimeType: "image/jpeg" });
-              if (save) saved.push(f);
+            const w = await watchAll(vf, workDir, `m${n + 1}`, palette(item), { maxShots: max_scenes });
+            for (const f of [...w.shots, ...w.sheets]) {
+              images.push({ type: "image", data: (await readFile(f.file)).toString("base64"), mimeType: "image/jpeg" });
+              if (save) saved.push(f.file);
             }
+            watched.push({
+              media: n + 1,
+              url: m.url,
+              duration_s: Math.round(w.duration * 10) / 10,
+              fps: w.fps,
+              frames_analyzed: w.frames_analyzed,
+              scenes_found: w.scenes_found,
+              scenes_shown: w.shots.map((s) => s.at),
+              contact_sheets: w.sheets.map((s) => `${s.covers} (1 quadro a cada ${w.sheet_step_s}s)`),
+              palette: w.palette,
+            });
           }
         }
       }
 
+      const local = [...new Set(watched.flatMap((w) => w.palette.filter((p) => !p.where.startsWith("no vídeo todo") && !p.where.startsWith("em boa")).map((p) => p.hex)))];
+      const partial = [...new Set(watched.flatMap((w) => w.palette.filter((p) => p.where.startsWith("em boa")).map((p) => p.hex)))];
       return ok(
         {
           item: item.title,
           page: pageUrl(item),
           credit: full(item).credit,
           shown: images.length,
-          order: canCut ? "imagens: stills das mídias estáticas; vídeos vêm só como frames, em ordem de tempo" : "um still por mídia",
+          order: canCut
+            ? "stills das mídias estáticas primeiro; depois, por vídeo: uma imagem por cena (tempos em watched[].scenes_shown) e as contact sheets do vídeo inteiro (watched[].contact_sheets)"
+            : "um still por mídia",
           media: media.map((m) => ({ type: m.type, url: m.url, size: `${m.width}x${m.height}` })),
+          watched: watched.length ? watched : undefined,
+          verdict: watched.length ? verdictOf(local, partial) : undefined,
+          warnings: warnings.length ? warnings : undefined,
           saved_to: save ? workDir : undefined,
           files: save ? saved : undefined,
-          note,
           attribution: ATTRIBUTION,
         },
         images

@@ -37,8 +37,21 @@ await call("godly_get", { target: "https://godly.website/website/" + b.items[0].
 );
 await call("godly_taxonomy", {}, (d) => (!Object.keys(d.tags).length ? "sem tags" : null));
 const vid = (b?.items || []).find((i) => i.video)?.page || id;
-// com frames, vídeo vem só como frames (o still duplicava o 1º frame)
-await call("godly_media", { target: vid, frames: 3, max_media: 1 }, (d, imgs) => (imgs !== 3 ? `esperava 3 frames, veio ${imgs}` : null));
+// poster_only = só o poster, com aviso
+await call("godly_media", { target: vid, poster_only: true, max_media: 1 }, (d, imgs) => (imgs !== 1 ? `esperava 1 poster, veio ${imgs}` : !d.warnings ? "sem aviso" : null));
+// padrão = vídeo inteiro: todos os frames analisados e contact sheets até o fim
+await call("godly_media", { target: vid, max_media: 1 }, (d) => {
+  const w = d.watched?.[0];
+  if (!w) return "sem watched";
+  if (w.frames_analyzed < w.duration_s * w.fps * 0.95) return `analisou ${w.frames_analyzed} de ~${Math.round(w.duration_s * w.fps)} frames`;
+  return null;
+});
+// regressão: o índigo #19167E do Stripe Press é só a página de um livro no fim do vídeo, não a identidade
+await call("godly_get", { target: "uf56li6" }, (d) => (!d.video_warning ? "item em vídeo sem video_warning" : null));
+await call("godly_media", { target: "uf56li6" }, (d) => {
+  const p = d.watched?.[0]?.palette.find((c) => c.hex === "#19167E");
+  return !p ? "não localizou #19167E" : !p.where.startsWith("só num trecho") ? `#19167E devia ser trecho, veio "${p.where}"` : null;
+});
 // regressões dos bugs achados montando a landing do Porteiro
 await call("godly_search", { query: "countdown timer", limit: 5 }, (d) =>
   !d.results.some((r) => /countdown/i.test(r.title)) ? "busca de 2 termos voltou a ser estrita demais" : null
